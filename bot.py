@@ -1,239 +1,164 @@
-print("=== BOT STARTED: v12.1 FINAL MULTI-USER ===")
+print("=== BOT STARTED: v12 FINAL STABLE ===")
 
-import os, json, re, asyncio, hashlib, requests
+import os, json, re, hashlib, requests
 from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    CallbackQueryHandler,
+    filters
 )
 
-# ================= CONFIG =================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+COMPANY_FILE = "company_ats.json"
 
-BASE_DIR = "profiles"
-os.makedirs(BASE_DIR, exist_ok=True)
+USERS = {}
 
-STRONG_SCORE = 7
-MAYBE_SCORE = 5
+# -------------------- HELPERS --------------------
 
-CTC_RANGES = ["0-8","8-12","12-18","18-25","25-35","35+"]
+def load_companies():
+    with open(COMPANY_FILE) as f:
+        return json.load(f)
 
-ROLE_KEYWORDS = [
-    "brand","marketing","digital","growth","strategy",
-    "communications","category","portfolio",
-    "manager","lead","head","director"
-]
+def hash_job(title, company, url):
+    return hashlib.md5(f"{title}{company}{url}".encode()).hexdigest()
 
-# ================= UTIL =================
-def path_for(chat_id, name):
-    return f"{BASE_DIR}/{chat_id}_{name}.json"
+def extract_text_from_file(path):
+    if path.endswith(".pdf"):
+        import pdfplumber
+        with pdfplumber.open(path) as pdf:
+            return " ".join(page.extract_text() or "" for page in pdf.pages)
+    if path.endswith(".docx"):
+        import docx
+        doc = docx.Document(path)
+        return " ".join(p.text for p in doc.paragraphs)
+    return ""
 
-def load_json(path, default):
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except:
-        return default
+def parse_profile(text):
+    text = text.lower()
+    skills = set(re.findall(r"\b[a-z]{4,}\b", text))
+    titles = ["brand", "marketing", "manager", "lead", "growth", "strategy"]
+    title = next((t for t in titles if t in text), "manager")
+    return {"skills": list(skills), "title": title}
 
-def save_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+# -------------------- START FLOW --------------------
 
-def now():
-    return datetime.now(timezone.utc).isoformat()
-
-def job_hash(url):
-    return hashlib.sha256(url.encode()).hexdigest()
-
-# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
-        "👋 Welcome!\n\n"
-        "This bot finds *real jobs* for you automatically.\n\n"
-        "Step 1️⃣ Upload your CV (PDF or DOCX).",
-        parse_mode="Markdown"
-    )
+    USERS[update.effective_chat.id] = {"step": "cv"}
+    await update.message.reply_text("👋 Upload CV (PDF or DOCX)")
 
-# ================= CV =================
 async def handle_cv(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
+    chat = update.effective_chat.id
+    file = await update.message.document.get_file()
+    path = f"/tmp/{update.message.document.file_name}"
+    await file.download_to_drive(path)
 
-    tg_file = await update.message.document.get_file()
-    data = await tg_file.download_as_bytearray()
-    text = data.decode(errors="ignore").lower()
+    text = extract_text_from_file(path)
+    profile = parse_profile(text)
 
-    roles = re.findall(
-        r"(brand manager|marketing manager|account manager|key account manager|manager|lead)",
-        text
-    )
+    USERS[chat].update(profile)
+    USERS[chat]["step"] = "ctc"
 
-    profile = {
-        "roles": list(set(roles)) or ["manager"]
-    }
-
-    save_json(path_for(chat_id, "profile"), profile)
-
-    kb = [[InlineKeyboardButton(f"₹ {r} LPA", callback_data=f"ctc_{r}")]
-          for r in CTC_RANGES]
+    buttons = [
+        [InlineKeyboardButton("₹5–10 LPA", callback_data="ctc_5")],
+        [InlineKeyboardButton("₹10–20 LPA", callback_data="ctc_10")],
+        [InlineKeyboardButton("₹20+ LPA", callback_data="ctc_20")]
+    ]
 
     await update.message.reply_text(
-        "Step 2️⃣ Select your current CTC range:",
-        reply_markup=InlineKeyboardMarkup(kb)
+        "Select current CTC",
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# ================= CTC =================
 async def handle_ctc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+    query = update.callback_query
+    await query.answer()
 
-    chat_id = q.message.chat_id
-    profile = load_json(path_for(chat_id, "profile"), {})
-    profile["ctc"] = q.data.replace("ctc_", "")
-    save_json(path_for(chat_id, "profile"), profile)
+    chat = query.message.chat.id
+    USERS[chat]["ctc"] = query.data
+    USERS[chat]["step"] = "search"
 
-    await q.edit_message_text(
-        "🚀 All set!\n\n"
-        "🔎 Scanning real job systems now.\n"
-        "You will receive alerts shortly."
-    )
+    await query.message.reply_text("🔎 Searching ATS systems...")
+    await run_job_search(chat, context)
 
-    context.application.create_task(run_discovery(chat_id))
+# -------------------- JOB SEARCH --------------------
 
-# ================= DISCOVERY =================
-async def run_discovery(chat_id):
-    await app.bot.send_message(chat_id, "🔎 Searching ATS systems (Greenhouse + Lever)…")
+async def run_job_search(chat_id, context):
+    user = USERS[chat_id]
+    companies = load_companies()
 
-    profile = load_json(path_for(chat_id, "profile"), {})
-    seen = load_json(path_for(chat_id, "seen"), {})
+    found = []
+    seen = set()
 
-    jobs = []
-    jobs += fetch_greenhouse_jobs()
-    jobs += fetch_lever_jobs()
+    for name, cfg in companies.items():
+        try:
+            if cfg["ats"] == "greenhouse":
+                url = f"https://boards-api.greenhouse.io/v1/boards/{cfg['slug']}/jobs"
+            else:
+                url = f"https://api.lever.co/v0/postings/{cfg['slug']}"
 
-    await app.bot.send_message(chat_id, f"📦 Retrieved {len(jobs)} raw jobs")
+            res = requests.get(url, timeout=10)
+            if res.status_code != 200:
+                continue
 
-    strong, maybe = [], []
+            jobs = res.json().get("jobs") if "jobs" in res.json() else res.json()
 
-    for job in jobs:
-        h = job_hash(job["url"])
-        if h in seen:
+            for job in jobs:
+                title = job.get("title", "")
+                location = job.get("location", {}).get("name", "")
+                desc = (job.get("content") or "").lower()
+
+                score = 0
+                if user["title"] in title.lower():
+                    score += 4
+                for s in user["skills"][:20]:
+                    if s in desc:
+                        score += 1
+
+                if score < 5:
+                    continue
+
+                h = hash_job(title, name, job.get("absolute_url", ""))
+                if h in seen:
+                    continue
+
+                seen.add(h)
+                found.append((score, title, name, job.get("absolute_url")))
+
+        except Exception:
             continue
 
-        score = score_job(job["title"], profile)
-        seen[h] = {**job, "score": score, "found_at": now()}
-
-        if score >= STRONG_SCORE:
-            strong.append((job, score))
-        elif score >= MAYBE_SCORE:
-            maybe.append((job, score))
-
-    save_json(path_for(chat_id, "seen"), seen)
-
-    if not strong and not maybe:
-        await app.bot.send_message(
+    if not found:
+        await context.bot.send_message(
             chat_id,
-            "❌ No relevant jobs found right now.\n"
-            "Try again later."
+            "❌ No relevant jobs right now.\nI will keep checking automatically."
         )
         return
 
-    if strong:
-        await app.bot.send_message(chat_id, "🔥 *Strong Matches*", parse_mode="Markdown")
-        for j, s in strong[:5]:
-            await app.bot.send_message(
-                chat_id,
-                f"*{j['title']}*\n"
-                f"🏢 {j['company']}\n"
-                f"⭐ {s}/10\n"
-                f"🔗 {j['url']}",
-                parse_mode="Markdown"
-            )
+    found.sort(reverse=True)
+    await context.bot.send_message(chat_id, f"🔥 Found {len(found)} relevant jobs:\n")
 
-    if maybe:
-        await app.bot.send_message(chat_id, "🤔 *Possible Matches*", parse_mode="Markdown")
-        for j, s in maybe[:5]:
-            await app.bot.send_message(
-                chat_id,
-                f"*{j['title']}*\n"
-                f"🏢 {j['company']}\n"
-                f"⭐ {s}/10\n"
-                f"🔗 {j['url']}",
-                parse_mode="Markdown"
-            )
+    for score, title, company, link in found[:10]:
+        await context.bot.send_message(
+            chat_id,
+            f"⭐ {score}/10\n{title}\n{company}\n🔗 {link}"
+        )
 
-# ================= ATS =================
-def fetch_greenhouse_jobs():
-    jobs = []
-    try:
-        boards = requests.get(
-            "https://boards-api.greenhouse.io/v1/boards",
-            timeout=10
-        ).json()
+# -------------------- ROUTER --------------------
 
-        for b in boards[:25]:
-            slug = b.get("slug")
-            if not slug:
-                continue
+async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Please follow the flow. Type /start")
 
-            postings = requests.get(
-                f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
-                timeout=10
-            ).json().get("jobs", [])
+# -------------------- APP --------------------
 
-            for p in postings:
-                loc = (p.get("location") or {}).get("name","").lower()
-                if "india" in loc:
-                    jobs.append({
-                        "title": p.get("title",""),
-                        "company": slug,
-                        "url": p.get("absolute_url")
-                    })
-    except:
-        pass
-
-    return jobs
-
-def fetch_lever_jobs():
-    jobs = []
-    try:
-        data = requests.get(
-            "https://api.lever.co/v0/postings",
-            timeout=10
-        ).json()
-
-        for p in data:
-            loc = (p.get("categories") or {}).get("location","").lower()
-            if "india" in loc:
-                jobs.append({
-                    "title": p.get("text",""),
-                    "company": p.get("company","lever"),
-                    "url": p.get("hostedUrl")
-                })
-    except:
-        pass
-
-    return jobs
-
-# ================= SCORING =================
-def score_job(title, profile):
-    t = title.lower()
-    s = 1
-
-    if any(r in t for r in profile.get("roles", [])):
-        s += 4
-    if any(k in t for k in ROLE_KEYWORDS):
-        s += 3
-    if any(x in t for x in ["manager","lead","head","director"]):
-        s += 2
-
-    return min(s, 10)
-
-# ================= APP =================
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.Document.ALL, handle_cv))
-app.add_handler(CallbackQueryHandler(handle_ctc, pattern="^ctc_"))
+app.add_handler(CallbackQueryHandler(handle_ctc, pattern="ctc_"))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
 app.run_polling()
