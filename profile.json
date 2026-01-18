@@ -1,1 +1,9 @@
-
+{
+  "roles": [
+    "lead"
+  ],
+  "work_mode": "all",
+  "location": "any",
+  "industries": "any",
+  "ctc": "12-18"
+}
