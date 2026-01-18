@@ -48,11 +48,11 @@ async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if mode not in ["remote", "hybrid", "onsite", "all"]:
         await update.message.reply_text(
-            "❌ Please type one of:\n"
-            "Remote / Hybrid / Onsite / All"
+            "❌ Please type one of:\nRemote / Hybrid / Onsite / All"
         )
         return
 
+    # save mode
     with open(PROFILE_FILE) as f:
         profile = json.load(f)
 
@@ -61,20 +61,21 @@ async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(PROFILE_FILE, "w") as f:
         json.dump(profile, f, indent=2)
 
+    # ✅ CASE 1: REMOTE
     if mode == "remote":
         context.user_data["step"] = "done"
         await update.message.reply_text(
             "🚀 All set!\n\n"
-            "I will now start sending relevant jobs automatically "
-            "(score ≥ 5)."
+            "I will now start sending relevant jobs automatically (score ≥ 5)."
         )
-    else:
-        context.user_data["step"] = "location"
-        await update.message.reply_text(
-            "Step 3️⃣: Preferred location(s)?\n"
-            "Example: Bangalore, Mumbai"
-        )
+        return   # ⬅️ IMPORTANT
 
+    # ✅ CASE 2: NOT REMOTE (hybrid / onsite / all)
+    context.user_data["step"] = "location"
+    await update.message.reply_text(
+        "Step 3️⃣: Preferred location(s)?\n"
+        "Example: Bangalore, Mumbai"
+    )
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("step") != "location":
