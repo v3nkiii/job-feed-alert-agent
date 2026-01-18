@@ -11,9 +11,14 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 PROFILE_FILE = "profile.json"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    context.user_data["step"] = "cv"
+
     await update.message.reply_text(
-        "👋 Welcome!\n\nStep 1️⃣: Upload your CV (PDF or DOCX)."
+        "👋 Welcome!\n\n"
+        "Step 1️⃣: Upload your CV (PDF or DOCX)."
     )
+
 
 async def handle_cv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await update.message.document.get_file()
@@ -26,14 +31,26 @@ async def handle_cv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(PROFILE_FILE, "w") as f:
         json.dump(profile, f, indent=2)
 
-    await update.message.reply_text(
-        "✅ CV processed.\n\nStep 2️⃣: Preferred work mode?\n"
-        "Type one:\nRemote / Hybrid / Onsite / All"
-    )
+    context.user_data["step"] = "mode"
+
+await update.message.reply_text(
+    "✅ CV processed.\n\n"
+    "Step 2️⃣: Preferred work mode?\n"
+    "Type one:\n"
+    "Remote / Hybrid / Onsite / All"
+)
 
 async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mode = update.message.text.lower()
+    if context.user_data.get("step") != "mode":
+        return
+
+    mode = update.message.text.strip().lower()
+
     if mode not in ["remote", "hybrid", "onsite", "all"]:
+        await update.message.reply_text(
+            "❌ Please type one of:\n"
+            "Remote / Hybrid / Onsite / All"
+        )
         return
 
     with open(PROFILE_FILE) as f:
@@ -45,16 +62,25 @@ async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         json.dump(profile, f, indent=2)
 
     if mode == "remote":
+        context.user_data["step"] = "done"
         await update.message.reply_text(
-            "🎯 Setup complete!\nI will now send you relevant jobs automatically."
+            "🚀 All set!\n\n"
+            "I will now start sending relevant jobs automatically "
+            "(score ≥ 5)."
         )
     else:
+        context.user_data["step"] = "location"
         await update.message.reply_text(
-            "Step 3️⃣: Preferred location(s)?\nExample: Bangalore, India"
+            "Step 3️⃣: Preferred location(s)?\n"
+            "Example: Bangalore, Mumbai"
         )
 
+
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    location = update.message.text
+    if context.user_data.get("step") != "location":
+        return
+
+    location = update.message.text.strip()
 
     with open(PROFILE_FILE) as f:
         profile = json.load(f)
@@ -64,9 +90,15 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(PROFILE_FILE, "w") as f:
         json.dump(profile, f, indent=2)
 
+    context.user_data["step"] = "done"
+
     await update.message.reply_text(
-        "🚀 All set!\nI will now start sending relevant jobs (score ≥ 5)."
+        "🚀 All set!\n\n"
+        f"Preferred location(s): {location}\n\n"
+        "I will now start sending relevant jobs automatically "
+        "(score ≥ 5)."
     )
+
 
 def extract_text(path):
     if path.endswith(".pdf"):
