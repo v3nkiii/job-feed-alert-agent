@@ -1,3 +1,5 @@
+print("=== BOT STARTED: NEW VERSION ===")
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import pdfplumber
@@ -5,8 +7,6 @@ import docx
 import re
 import json
 import os
-
-print("=== BOT STARTED: NEW VERSION ===")
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
