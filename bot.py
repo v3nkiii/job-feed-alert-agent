@@ -6,6 +6,8 @@ import re
 import json
 import os
 
+print("=== BOT STARTED: NEW VERSION ===")
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 PROFILE_FILE = "profile.json"
