@@ -41,9 +41,7 @@ await update.message.reply_text(
 )
 
 async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("step") != "mode":
-        return
-
+    # We assume text_router already checked step == "mode"
     mode = update.message.text.strip().lower()
 
     if mode not in ["remote", "hybrid", "onsite", "all"]:
@@ -52,7 +50,7 @@ async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # save mode
+    # Load profile
     with open(PROFILE_FILE) as f:
         profile = json.load(f)
 
@@ -61,28 +59,26 @@ async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(PROFILE_FILE, "w") as f:
         json.dump(profile, f, indent=2)
 
-    # ✅ CASE 1: REMOTE
+    # CASE 1: Remote → finish
     if mode == "remote":
         context.user_data["step"] = "done"
         await update.message.reply_text(
             "🚀 All set!\n\n"
             "I will now start sending relevant jobs automatically (score ≥ 5)."
         )
-        return   # ⬅️ IMPORTANT
+        return
 
-    # ✅ CASE 2: NOT REMOTE (hybrid / onsite / all)
+    # CASE 2: All / Hybrid / Onsite → ask for location
     context.user_data["step"] = "location"
     await update.message.reply_text(
         "Step 3️⃣: Preferred location(s)?\n"
-        "Example: Bangalore, Mumbai"
+        "Example: Pune, Mumbai"
     )
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("step") != "location":
-        return
-
     location = update.message.text.strip()
 
+    # Load profile
     with open(PROFILE_FILE) as f:
         profile = json.load(f)
 
@@ -91,15 +87,32 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(PROFILE_FILE, "w") as f:
         json.dump(profile, f, indent=2)
 
+    # Mark flow complete
     context.user_data["step"] = "done"
 
     await update.message.reply_text(
         "🚀 All set!\n\n"
         f"Preferred location(s): {location}\n\n"
-        "I will now start sending relevant jobs automatically "
-        "(score ≥ 5)."
+        "I will now start sending relevant jobs automatically (score ≥ 5)."
     )
 
+async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    step = context.user_data.get("step")
+
+    print("ROUTER STEP:", step)
+    print("TEXT:", update.message.text)
+
+    if step == "mode":
+        await handle_mode(update, context)
+        return
+
+    if step == "location":
+        await handle_location(update, context)
+        return
+
+    await update.message.reply_text(
+        "⚠️ I am not expecting text right now.\nType /start to restart."
+    )
 
 def extract_text(path):
     if path.endswith(".pdf"):
@@ -129,7 +142,9 @@ app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.Document.ALL, handle_cv))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_mode))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_location))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+
+#app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_mode))
+#app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_location))
 
 app.run_polling()
